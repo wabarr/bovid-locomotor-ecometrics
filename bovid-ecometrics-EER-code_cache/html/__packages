@@ -1,0 +1,12 @@
+base
+sp
+rgdal
+rgeos
+maptools
+dplyr
+raster
+tidyr
+reshape2
+RColorBrewer
+MASS
+GISTools

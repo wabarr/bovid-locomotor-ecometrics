@@ -1,0 +1,285 @@
+---
+title: "maps-bovid-ecometrics"
+author: "Andrew Barr"
+date: "September 15, 2015"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    keep_md: true
+---
+
+## Preliminaries
+
+```{r warning=FALSE, message=FALSE}
+library(rgdal)
+library(rgeos)
+library(maptools)
+library(dplyr)
+library(raster)
+library(tidyr)
+library(reshape2)
+library(GISTools)
+
+par.original <- par(no.readonly=TRUE)
+
+summarize_regression <- function(model, round=2, label=""){
+  mod_summary <- summary(model)
+  return(knitr::kable(data.frame(
+    label=label,
+    intercept=round(mod_summary$coefficients[1,1],round),
+    SEI=round(mod_summary$coefficients[1,2],round),
+    slope=round(mod_summary$coefficients[2,1],round),
+    SES=round(mod_summary$coefficients[2,2],round),
+    r2 = round(mod_summary$adj.r.squared,round)
+    )))
+}
+
+summarize_ANOVA <- function(model, round=2, label=""){
+  mod_summary <- summary(model)
+  return(knitr::kable(data.frame(
+    label=label, 
+    ## a litte tricky to get correct coeffs
+    # because the coefficients are in the original order, even though I used a ordered factor in the lm()
+    forest=round(mod_summary$coefficients[1,1],round),
+    wetland=round(mod_summary$coefficients[6,1],round),
+    woodySav=round(mod_summary$coefficients[3,1],round),
+    sav=round(mod_summary$coefficients[4,1],round),
+    openShrub=round(mod_summary$coefficients[2,1],round),
+    grass=round(mod_summary$coefficients[5,1],round),
+    barren=round(mod_summary$coefficients[7,1],round),
+    r2 = round(mod_summary$adj.r.squared,round)
+    )))
+}
+```
+
+## Load africa
+
+```{r}
+#get base file path to load data files...assumes file paths are from perspective of directory containing this file
+base_path <- getwd()
+africa <- readOGR(paste0(base_path,"/africa_shp/africa.shp"), "africa")
+```
+
+## Load bovids and merge based on taxonomic name
+
+```{r cache=FALSE}
+bovids <- readOGR(paste0(base_path,"/IUCN-Redlist/AFRICAN_BOVIDS.shp"), "AFRICAN_BOVIDS")
+bovids <- spTransform(bovids, proj4string(africa))
+
+mergedBovidPolys <- unionSpatialPolygons(bovids, IDs = bovids@data$id_no)
+mergedBovidAttributes <- group_by(bovids@data, id_no) %>% summarize(binomial = unique(binomial))
+class(mergedBovidAttributes) <- "data.frame"
+rownames(mergedBovidAttributes) <- mergedBovidAttributes$id_no
+bovids <- SpatialPolygonsDataFrame(mergedBovidPolys, mergedBovidAttributes)
+rm(mergedBovidAttributes,mergedBovidPolys)
+
+#eliminate outlier taxa, because they are is usually the only taxon in the community and are north of Sahara
+##
+outliers <- c(which(bovids@data$binomial == "Ammotragus lervia"), which(bovids@data$binomial == "Gazella cuvieri"), which(bovids@data$binomial == "Addax nasomaculatus"))
+bovids <- bovids[-outliers,]
+
+```
+
+
+
+## Make raster 
+
+```{r cache=FALSE}
+africaRaster <- raster(extent(africa), res=c(50000,50000), crs=CRS(proj4string(africa)))
+africaRaster <- mask(africaRaster, africa)
+```
+
+## Compute bovid species richness
+
+```{r cache=FALSE}
+bovidRichness <- rasterize(x=bovids, y=africaRaster, fun='count', field="id_no")
+plot(bovidRichness, axes=F, box=F, main="Bovid Species Richness")
+```
+
+
+## Get data from sqlite ecomorph database, clone of production ecomorph database on webfaction
+
+```{r cache=FALSE}
+joinedDFs <- read.table("all_ecomorphic_data.csv", sep=",", header=T)
+bovids@data$B <- joinedDFs$B/joinedDFs$geomeans
+bovids@data$DistRad <- joinedDFs$DistRad/joinedDFs$geomeans
+bovids@data$ProxRad <- joinedDFs$ProxRad/joinedDFs$geomeans
+bovids@data$MML <- joinedDFs$MML/joinedDFs$geomeans
+bovids@data$WAF <- joinedDFs$WAF/joinedDFs$geomeans
+
+bovids@data$relMidshaftWidth <- joinedDFs$relMidshaftWidth
+bovids@data$relMetarsalLength <- joinedDFs$relMetarsalLength
+bovids@data$relMetatarsalDepth <- joinedDFs$relMetatarsalDepth
+bovids@data$medialVert <- joinedDFs$medialVert
+bovids@data$distalArticular <- joinedDFs$distalArticular
+```
+
+
+## Load MAP raster
+
+```{r}
+MAP <- raster(paste0(base_path,"/globalMAP_2point5_arcseconds.grd"))
+MAP <- projectRaster(MAP, africaRaster)
+```
+
+
+
+## Load land cover raster
+
+```{r}
+landCover <- raster(paste0(base_path,"/AFRICA_LandCover.TIFF"))
+landCover <- projectRaster(landCover, africaRaster, method="ngb")
+values(landCover)[values(landCover) %in% c(0, 1, 3, 4, 5, 6, 12, 13, 14)] <- NA
+#method = 'ngb' refers to nearest neighbor, useful for categorical rasters
+```
+
+
+## function to do a single variable
+
+```{r}
+doEcometricAnalysis <- function(var, 
+                                originalMAP, 
+                                originalLandCover, 
+                                savePlots=FALSE, 
+                                dir=base_path, 
+                                width=5, height=5, 
+                                cex.main=1.75, 
+                                plotLabel=NULL, 
+                                scaleBar=FALSE,
+                                northArrow=FALSE,
+                                returnLMs=TRUE,
+                                writeEcometricRaster=FALSE) {
+  stopifnot(var %in% names(bovids@data))
+  ecometric <- rasterize(x=bovids, 
+                         y=africaRaster, 
+                         fun=function(x, ...) {mean(x, na.rm=TRUE)}, 
+                         field=var)
+  plot(ecometric,axes=F,box=F, main=paste("mean", var))
+  if(writeEcometricRaster) writeRaster(ecometric, paste0(base_path,"/ecometricRasters/",var,".tif"), overwrite=TRUE)
+
+  MAP <- mask(originalMAP, ecometric)
+  
+  MAPlm <- lm(scale(values(ecometric))~sqrt(values(MAP)))
+  summary(MAPlm)
+  plot(scale(values(ecometric))~sqrt(values(MAP)), pch=16, xlab="sqrt(MAP)", ylab=var)
+  abline(reg=MAPlm, col="red", lty=2)
+  
+  landCover <- mask(originalLandCover, ecometric)
+  landCoverFactor <- factor(values(landCover))
+  levels(landCoverFactor) <- c("Evergreen\nBroad. Forest",
+                               "Open\nShrub.",
+                               "Woody\nSavannas",
+                               "Savannas",
+                               "Grasslands",
+                               "Perm.\nWetland",
+                               "Barren")
+  landCoverFactor <- ordered(landCoverFactor, 
+                     levels=c("Evergreen\nBroad. Forest", "Perm.\nWetland","Woody\nSavannas", "Savannas","Open\nShrub.","Grasslands",  "Barren"))
+  plot(scale(values(ecometric))~landCoverFactor, col=(terrain.colors(7)), las=2, xlab="", ylab="", main=var)
+  box()
+
+    
+  if(savePlots){
+    pdf(file = paste0(dir,"/",var,".pdf"), width=width, height=height)
+    plot(scale(ecometric), axes=FALSE, box=F)
+    text(1636265, 3249920, labels=ifelse(is.null(plotLabel), var, plotLabel), cex=cex.main)
+    if(scaleBar){      
+      scalebar(c(-1795336,-911192.4), d=1000000, divs=2, label="1000 km", adj=c(0,-1),type="bar")
+      north.arrow(-1198181, -1670000,len = 100000, lab = "N")
+    }
+    dev.off()
+    
+    pdf(file = paste0(dir,"/",var,"-MAPscatterplot.pdf"), width=width, height=height)
+    plot(scale(values(ecometric))~sqrt(values(MAP)), pch=16, xlab="sqrt(MAP)", ylab=ifelse(is.null(plotLabel), var, plotLabel), main=ifelse(is.null(plotLabel), var, plotLabel), cex.main=cex.main)
+    abline(reg=MAPlm, col="red", lty=5, lwd=3)
+    dev.off()
+    
+    pdf(file = paste0(dir,"/",var,"-landcoverBoxplots.pdf"), width=width*1.8, height=height)
+    plot(scale(values(ecometric))~landCoverFactor, col=(terrain.colors(7)), xlab="", ylab="", main=ifelse(is.null(plotLabel), var, plotLabel), cex.main=cex.main, cex.lab=0.5)
+    dev.off()
+
+    }
+  
+  print(summarize_regression(MAPlm, 2, label=sprintf("MAP~%s", var)))
+  
+  options(contrasts = c("contr.treatment", "contr.treatment")) #nesseary to have treament contrasts for ordered factors
+  LClm <- lm(scale(values(ecometric))~landCoverFactor)
+  print(summarize_ANOVA(LClm, 2, label=sprintf("LC~%s", var)))
+  if(returnLMs) return(list(unscaledLC=lm(values(ecometric)~landCoverFactor), 
+                            unscaledMAP=lm(values(ecometric)~sqrt(values(MAP)))
+                            )
+                      )
+  }
+```
+
+
+## B
+
+```{r results="asis", cache=TRUE}
+resB <- doEcometricAnalysis("B", MAP, landCover, savePlots = F)
+resB
+```
+
+## DistRad
+
+```{r results="asis", cache=TRUE}
+resDistRad <- doEcometricAnalysis("DistRad", MAP, landCover, savePlots = F)
+resDistRad
+```
+
+## ProxRad
+
+```{r results="asis", cache=TRUE}
+resProxRad <- doEcometricAnalysis("ProxRad", MAP, landCover, savePlots = F)
+resProxRad
+```
+
+## WAF
+
+```{r results="asis", cache=TRUE}
+resWAF <- doEcometricAnalysis("WAF", MAP, landCover, savePlots = F)
+resWAF
+```
+
+## MML
+
+```{r results="asis", cache=TRUE}
+resMML <- doEcometricAnalysis("MML", MAP, landCover, savePlots = F, scaleBar=TRUE, northArrow=TRUE, plotLabel="MMLa")
+resMML
+```
+
+## relMidshaftWidth
+
+```{r results="asis", cache=TRUE}
+resrelMidshaftWidth <- doEcometricAnalysis("relMidshaftWidth", MAP, landCover, savePlots = F, plotLabel="MMLm")
+resrelMidshaftWidth
+```
+
+## relMetarsalLength
+
+```{r results="asis", cache=TRUE}
+resrelMetarsalLength <- doEcometricAnalysis("relMetarsalLength", MAP, landCover, savePlots = F, plotLabel="MLEN")
+resrelMetarsalLength
+```
+
+## relMetatarsalDepth
+
+```{r results="asis", cache=TRUE}
+resrelMetatarsalDepth <- doEcometricAnalysis("relMetatarsalDepth", MAP, landCover, savePlots = F, plotLabel="MDepth")
+resrelMetatarsalDepth
+```
+
+## medialVert
+
+```{r results="asis", cache=TRUE}
+resmedialVert <- doEcometricAnalysis("medialVert", MAP, landCover, savePlots = F, plotLabel="MVAP")
+resmedialVert
+```
+
+## distalArticular
+
+```{r results="asis", cache=TRUE}
+resdistalArticular <- doEcometricAnalysis("distalArticular", MAP, landCover, savePlots = F, plotLabel="IDML")
+resdistalArticular
+```
