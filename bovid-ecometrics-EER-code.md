@@ -64,12 +64,6 @@ africa <- readOGR(paste0(base_path,"/africa_shp/africa.shp"), "africa")
 bovids <- readOGR(paste0(base_path,"/IUCN-Redlist/AFRICAN_BOVIDS.shp"), "AFRICAN_BOVIDS")
 ```
 
-```
-## OGR data source with driver: ESRI Shapefile 
-## Source: "/Users/wabarr/Dropbox/EcomorphEcometric/ecomorph-ecometric-r/bovid-locomotor-ecometrics-SHARED-CODE-EER/IUCN-Redlist/AFRICAN_BOVIDS.shp", layer: "AFRICAN_BOVIDS"
-## with 424 features
-## It has 26 fields
-```
 
 ```r
 bovids <- spTransform(bovids, proj4string(africa))
