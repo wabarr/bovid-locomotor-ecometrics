@@ -57,13 +57,6 @@ base_path <- getwd()
 africa <- readOGR(paste0(base_path,"/africa_shp/africa.shp"), "africa")
 ```
 
-```
-## OGR data source with driver: ESRI Shapefile 
-## Source: "/Users/wabarr/Dropbox/EcomorphEcometric/ecomorph-ecometric-r/bovid-locomotor-ecometrics-SHARED-CODE-EER/africa_shp/africa.shp", layer: "africa"
-## with 1 features
-## It has 3 fields
-```
-
 ## Load bovids and merge based on taxonomic name
 
 
