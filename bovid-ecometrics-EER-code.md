@@ -1,6 +1,7 @@
 # maps-bovid-ecometrics
 Andrew Barr  
-September 15, 2015  
+
+**Note:** the precipitation and land cover rasters required to run this analysis are too large for github and are available upon request from the author
 
 ## Preliminaries
 
